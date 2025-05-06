@@ -31,7 +31,7 @@ void setup() {
   rtc.setClockMode(false);
   
   // Update Clock's Date and Time (see funtion).
-  //inputClockDateTime(25, 4, 15, 3, 15, 35, 30);
+  //inputClockDateTime(25, 5, 04, 1, 12, 19, 30);
 
   // Initialize the BME280 sensor
   if (!bme.begin(TMP_ADDR)) { // Check if the BME280 is connected at I2C address 0x76
@@ -80,6 +80,14 @@ void loop () {
 
   Serial.print(logLine);  // Print to Serial
 
+  // Writing indication, if blinking don't remove sd.
+  for (int i = 0; i < 10; i++) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(250);
+  }
+
   // Append to log file
   File logFile = SD.open("/log.txt", FILE_APPEND);
   if (logFile) {
@@ -87,14 +95,6 @@ void loop () {
     logFile.close();
   } else {
     Serial.println("Failed to open log file for writing");
-  }
-
-  // Writing indication: fast blink 10x
-  for (int i = 0; i < 10; i++) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(250);
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(250);
   }
   
   if (!DEBUG_MODE) {

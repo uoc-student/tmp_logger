@@ -1,10 +1,11 @@
-#include <DS3231.h>
+//#include <DS3231.h>
 #include <SD.h>
 #include <Wire.h>
 #include <time.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
-
+#include <RTClib.h>
+#include "esp_sleep.h"
 
 #define INTERVAL        30 * 60 * 1000  // Interval for reading data in ms (current: every 30 minutes)
 #define OFFSET          4.0             // There is a 4 degrees Celsius Offset
@@ -12,9 +13,11 @@
 #define SD_CS           7               // Chip Select, can be any GPIO pin
 #define LED_BUILDIN     8               // Buildin blue led
 #define DEBUG_MODE      false           // Set to true to disable deep sleep during development (prevents serial port issues)
+#define SQW_PIN         0               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
+#define DS3231_ADDR     0x68            // I²C address (to set the timer)
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)
-DS3231                  rtc;            // Create an instance of the DS3231 real time clock
+RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC (real time clock)
 bool                    h12 = false;    // 12 hour format
 bool                    amPM = false;   // AM / PM display
 bool                    CenturyBit;     // declare a variable to receive the Century bit for year overflow
@@ -26,12 +29,24 @@ void setup() {
   
   pinMode(LED_BUILDIN, OUTPUT);
   Wire.begin(2, 3);  // SDA = GPIO 2, SCL = GPIO 3 
+  Serial.println("GPIO pins initialized");
 
-  // Set the RTC to 24-hour mode
-  rtc.setClockMode(false);
-  
-  // Update Clock's Date and Time (see funtion).
-  //inputClockDateTime(25, 5, 04, 1, 12, 19, 30);
+  // Initialize the RTC
+  if (!rtc.begin()) {
+  Serial.println("Couldn't find RTC");
+  while (1);
+  }
+
+  if (rtc.lostPower()) {
+  Serial.println("RTC lost power, setting the time!");
+  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));  // Set RTC to compile time
+  } else {
+    Serial.println("OK -> RTC initialized and time up to date!");
+  }
+
+  clearAlarmFlag();   // Clear any existing alarm
+  setNextAlarm();     // Schedule next one
+  Serial.println("OK -> RTC Alarm1 sheduled!");
 
   // Initialize the BME280 sensor
   if (!bme.begin(TMP_ADDR)) { // Check if the BME280 is connected at I2C address 0x76
@@ -67,26 +82,18 @@ void loop () {
   float temp_F = (temp_C * 9.0 / 5.0) + 32.0;
 
   // Get current time from RTC
-  uint8_t hour = rtc.getHour(h12, amPM); // (h12 clock, AMPM mode) 
-  uint8_t minute = rtc.getMinute();
-  uint8_t second = rtc.getSecond();
-  uint8_t day = rtc.getDate();
-  uint8_t month = rtc.getMonth(CenturyBit);
-  uint16_t year = rtc.getYear() + 2000; // RTC year is in two digits (e.g., 25 for 2025)
+  DateTime now = rtc.now();
 
   char logLine[64];
   sprintf(logLine, "%02d-%02d-%04d\t%02d:%02d:%02d\t%.1f C\t\t%.1f F\n",
-          day, month, year, hour, minute, second, temp_C, temp_F);
+          now.day(), now.month(), now.year(), now.hour(), now.minute(), now.second(), temp_C, temp_F);
 
   Serial.print(logLine);  // Print to Serial
 
   // Writing indication, if blinking don't remove sd.
-  for (int i = 0; i < 10; i++) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(250);
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(250);
-  }
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(100);
+  digitalWrite(LED_BUILTIN, LOW);
 
   // Append to log file
   File logFile = SD.open("/log.txt", FILE_APPEND);
@@ -96,26 +103,102 @@ void loop () {
   } else {
     Serial.println("Failed to open log file for writing");
   }
-  
+  /*
   if (!DEBUG_MODE) {
   Serial.println("Entering deep sleep...");
   delay(100);  // Let the message flush
-  esp_sleep_enable_timer_wakeup((uint64_t)INTERVAL * 1000);
+  esp_sleep_enable_ext0_wakeup(SQW_PIN, 0);  // Wake on LOW signal from RTC
   esp_deep_sleep_start();
   } else {
     Serial.println("DEBUG_MODE active — not sleeping.");
   }
+  */
 }
 
 
-void inputClockDateTime(byte year, byte month, byte day, byte dow, byte hh, byte mm, byte ss) {
-  rtc.setYear(year);    // Year: 00-99
-  rtc.setMonth(month);    // Month: 1-12
-  rtc.setDate(day);    // Date: 1-31
-  rtc.setDoW(dow);      // Day of Week: Tuesday (1=Sunday, 2=Monday, ..., 7=Saturday)
-  rtc.setHour(hh);    // Hour: 0-23 
-  rtc.setMinute(mm);  // Minute: 0-59
-  rtc.setSecond(ss);   // Second: 0-59
+/*
+  Current Time Registers (starting at 0x00)
+  Function Address Bits Description
+  Seconds 0x00  BCD format (0–59) + A1M1 if used for Alarm
+  Minutes 0x01  BCD format (0–59) + A1M2
+  Hours 0x02  BCD format (0–23 or 1–12, + AM/PM flag)
+  Day (DOW) 0x03  Day of week (1–7)
+  Date  0x04  Day of month (1–31)
+  Month 0x05  Month (1–12), bit 7 = Century bit
+  Year  0x06  Year (00–99)
+  
+  Alarm 1 Registers (start at 0x07)
+  Function  Address Bits / Notes
+  Alarm1 Seconds  0x07  BCD seconds + A1M1 bit (bit 7)
+  Alarm1 Minutes  0x08  BCD minutes + A1M2 bit
+  Alarm1 Hours  0x09  BCD hours + A1M3 bit + 12/24 hr mode + AM/PM
+  Alarm1 Day/Date 0x0A  BCD day/date + A1M4 bit + DY/DT bit (bit 6: 1 = day of week, 0 = date)
+  
+  Note: Bits 7 in each of the above control whether that time unit must match (A1Mx). 1 = ignore, 0 = match.
 
-  Serial.println("RTC time and date set.");
+  Control and Status Registers
+  Function  Address Bits Description
+  Control Register  0x0E  Enables alarms, square wave, interrupts, etc.
+  Status Register 0x0F  Alarm flags (A1F, A2F), Oscillator Stop Flag (OSF)
+  
+  🚨Bits to Clear / Set
+  Control Register (0x0E):
+  
+  Bit 2 (INTCN) = 1 → Use interrupt (not square wave) on SQW pin
+  Bit 0 (A1IE) = 1 → Enable Alarm 1 Interrupt
+  Status Register (0x0F):
+  Bit 0 (A1F) = 1 → Alarm 1 has triggered. You must clear it manually after wake.
+  Write 0 to bit 0 to clear it after you read the alarm.
+*/
+
+void setNextAlarm() {
+  DateTime now = rtc.now();
+
+  int nextMinute = (now.minute() < 30) ? 30 : 0;
+  int nextHour = now.hour() + (now.minute() >= 30 ? 1 : 0);
+
+  // Convert to BCD format (required by the RTC registers)
+  uint8_t seconds = 0;
+  uint8_t minutes = ((nextMinute / 10) << 4) | (nextMinute % 10);
+  uint8_t hours = ((nextHour / 10) << 4) | (nextHour % 10);
+  uint8_t day = 0x80;  // Bit 7 = A1M4 = 1 (don’t match date)
+
+  //1 = ignore, 0 = match.
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x07);  // Alarm 1 registers
+  Wire.write(0x00);  // Seconds — match exactly (A1M1 = 0)
+  Wire.write(minutes); // Minutes — match (A1M2 = 0)
+  Wire.write(hours);   // Hours — match (A1M3 = 0)
+  Wire.write(day);     // A1M4 = 1, match every day
+  Wire.endTransmission();
+
+  /* Enable Alarm 1 interrupt
+     INTCN = 1 → enable interrupt output on SQW/INT pin
+     A1IE = 1 → enable Alarm 1 interrupt
+  */
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x0E);  // Read control register
+  Wire.requestFrom(DS3231_ADDR, 1);  // request 1 byte 
+  uint8_t ctrl = Wire.read();
+  ctrl |= 0b00000101;  // INTCN = 1, A1IE = 1
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x0E);
+  Wire.write(ctrl);
+  Wire.endTransmission();
+}
+
+void clearAlarmFlag() {
+  // Clear Alarm 1 flag (A1F)
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x0F);  // Status register
+  Wire.endTransmission();
+
+  Wire.requestFrom(DS3231_ADDR, 1);
+  uint8_t status = Wire.read();
+  status &= ~0b00000001;  // Clear A1F
+
+  Wire.beginTransmission(DS3231_ADDR);
+  Wire.write(0x0F);
+  Wire.write(status);
+  Wire.endTransmission();
 }

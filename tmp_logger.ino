@@ -11,10 +11,11 @@
 #define OFFSET          4.0             // There is a 4 degrees Celsius Offset
 #define TMP_ADDR        0x76            // BME280 is connected at I2C address 0x76 (pin connected to GND)
 #define SD_CS           7               // Chip Select, can be any GPIO pin
-#define LED_BUILDIN     8               // Buildin blue led
 #define DEBUG_MODE      false           // Set to true to disable deep sleep during development (prevents serial port issues)
-#define SQW_PIN         0               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
+#define SQW_PIN         1               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
 #define DS3231_ADDR     0x68            // I²C address (to set the timer)
+#define LED_BOARD       8
+#define LOG_FILE        "/log.txt"      // Log file path on SD card
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)
 RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC (real time clock)
@@ -23,19 +24,29 @@ bool                    amPM = false;   // AM / PM display
 bool                    CenturyBit;     // declare a variable to receive the Century bit for year overflow
 
 
+/*
+ * ESP32C3 does not support RTC wakeup, 
+ * it is using a GPIO LOW to wake up from deep sleep, 
+ * this signal is comming from the external RTC :sunglasses :)
+ * https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/system/sleep_modes.html#_CPPv433esp_deep_sleep_enable_gpio_wakeup8uint64_t33esp_deepsleep_gpio_wake_up_mode_t
+ */
+
 void setup() {
   Serial.begin(115200); // Start serial communication
   Serial.println("******** Initializing setup() ********");
   
-  pinMode(LED_BUILDIN, OUTPUT);
+  pinMode(LED_BOARD, OUTPUT);
   Wire.begin(2, 3);  // SDA = GPIO 2, SCL = GPIO 3 
   Serial.println("GPIO pins initialized");
 
-  // Initialize the RTC
+  // Initialize the RTC and SWQ_PIN for wakeup call
   if (!rtc.begin()) {
   Serial.println("Couldn't find RTC");
   while (1);
   }
+  
+  pinMode(SQW_PIN, INPUT_PULLUP);  // Set pin as input with pull-up
+  esp_deep_sleep_enable_gpio_wakeup(1ULL << SQW_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
 
   if (rtc.lostPower()) {
   Serial.println("RTC lost power, setting the time!");
@@ -91,28 +102,27 @@ void loop () {
   Serial.print(logLine);  // Print to Serial
 
   // Writing indication, if blinking don't remove sd.
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(100);
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(LED_BOARD, HIGH);
+  delay(250);
+  digitalWrite(LED_BOARD, LOW);
 
   // Append to log file
-  File logFile = SD.open("/log.txt", FILE_APPEND);
+  File logFile = SD.open(LOG_FILE, FILE_APPEND);
   if (logFile) {
     logFile.print(logLine);
     logFile.close();
   } else {
     Serial.println("Failed to open log file for writing");
   }
-  /*
-  if (!DEBUG_MODE) {
-  Serial.println("Entering deep sleep...");
-  delay(100);  // Let the message flush
-  esp_sleep_enable_ext0_wakeup(SQW_PIN, 0);  // Wake on LOW signal from RTC
-  esp_deep_sleep_start();
-  } else {
+
+  if (DEBUG_MODE) {
     Serial.println("DEBUG_MODE active — not sleeping.");
-  }
-  */
+    delay(5000); // print every 5 seconds
+  } else {
+    Serial.println("Entering deep sleep...");
+    delay(100);  // Let the message flush
+    esp_deep_sleep_start();
+  } 
 }
 
 
@@ -155,7 +165,7 @@ void setNextAlarm() {
   DateTime now = rtc.now();
 
   int nextMinute = (now.minute() < 30) ? 30 : 0;
-  int nextHour = now.hour() + (now.minute() >= 30 ? 1 : 0);
+  int nextHour = (now.hour() + (now.minute() >= 30 ? 1 : 0)) % 24;
 
   // Convert to BCD format (required by the RTC registers)
   uint8_t seconds = 0;
@@ -178,25 +188,30 @@ void setNextAlarm() {
   */
   Wire.beginTransmission(DS3231_ADDR);
   Wire.write(0x0E);  // Read control register
+  Wire.endTransmission();
+  
   Wire.requestFrom(DS3231_ADDR, 1);  // request 1 byte 
   uint8_t ctrl = Wire.read();
   ctrl |= 0b00000101;  // INTCN = 1, A1IE = 1
+  
   Wire.beginTransmission(DS3231_ADDR);
   Wire.write(0x0E);
   Wire.write(ctrl);
   Wire.endTransmission();
+
+  Serial.printf("Alarm set for: %02d:%02d\n", nextHour, nextMinute);
 }
 
 void clearAlarmFlag() {
   // Clear Alarm 1 flag (A1F)
   Wire.beginTransmission(DS3231_ADDR);
   Wire.write(0x0F);  // Status register
-  Wire.endTransmission();
-
+  Wire.endTransmission(false);
   Wire.requestFrom(DS3231_ADDR, 1);
   uint8_t status = Wire.read();
   status &= ~0b00000001;  // Clear A1F
 
+  // Write back the modified status
   Wire.beginTransmission(DS3231_ADDR);
   Wire.write(0x0F);
   Wire.write(status);

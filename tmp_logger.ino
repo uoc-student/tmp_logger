@@ -11,10 +11,10 @@
 #define OFFSET          4.0             // There is a 4 degrees Celsius Offset
 #define TMP_ADDR        0x76            // BME280 is connected at I2C address 0x76 (pin connected to GND)
 #define SD_CS           7               // Chip Select, can be any GPIO pin
-#define DEBUG_MODE      false           // Set to true to disable deep sleep during development (prevents serial port issues)
+#define DEBUG_MODE      true           // Set to true to disable deep sleep during development (prevents serial port issues)
 #define SQW_PIN         1               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
 #define DS3231_ADDR     0x68            // I²C address (to set the timer)
-#define LED_BOARD       8
+#define LED_BOARD       8               // Internal ESP32C3 LED
 #define LOG_FILE        "/log.txt"      // Log file path on SD card
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)

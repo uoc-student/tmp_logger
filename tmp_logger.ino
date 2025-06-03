@@ -15,7 +15,7 @@
 #define SQW_PIN         1               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
 #define DS3231_ADDR     0x68            // I²C address (to set the timer)
 #define LOG_FILE        "/log.txt"      // Log file path on SD card
-#define BME280_PWR_PIN  8               // GPIO 8 controls power to BME280
+#define BME280_PWR_PIN  0               // GPIO 8 controls power to BME280
 #define SD_PWR_PIN      10              // GPIO 10 controls power to SD card
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)
@@ -32,6 +32,10 @@ RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC 
 void setup() {
   Serial.begin(115200); // Start serial communication
   Serial.println("******** Initializing setup() ********");
+  
+  // Turn off annoying blue LED
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
   
   // Initialize SD card MOSFET N-Channel (gpio controlled)
   pinMode(SD_PWR_PIN, OUTPUT);
@@ -91,7 +95,7 @@ void setup() {
   Serial.println("******** SETUP SUCCESSFULL ********");
 }
 
-void loop () {
+void loop () {  
   // Read temperature in Celsius from BME280
   float temp_C = bme.readTemperature() - OFFSET;
   // Convert Celsius to Fahrenheit

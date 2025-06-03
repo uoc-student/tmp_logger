@@ -11,11 +11,12 @@
 #define OFFSET          4.0             // There is a 4 degrees Celsius Offset
 #define TMP_ADDR        0x76            // BME280 is connected at I2C address 0x76 (pin connected to GND)
 #define SD_CS           7               // Chip Select, can be any GPIO pin
-#define DEBUG_MODE      true           // Set to true to disable deep sleep during development (prevents serial port issues)
+#define DEBUG_MODE      true            // Set to true to disable deep sleep during development (prevents serial port issues)
 #define SQW_PIN         1               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
 #define DS3231_ADDR     0x68            // I²C address (to set the timer)
-#define LED_BOARD       8               // Internal ESP32C3 LED
 #define LOG_FILE        "/log.txt"      // Log file path on SD card
+#define BME280_PWR_PIN  8               // GPIO 8 controls power to BME280
+#define SD_PWR_PIN      10              // GPIO 10 controls power to SD card
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)
 RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC (real time clock)
@@ -32,7 +33,11 @@ void setup() {
   Serial.begin(115200); // Start serial communication
   Serial.println("******** Initializing setup() ********");
   
-  // Initialize SD card  
+  // Initialize SD card MOSFET N-Channel (gpio controlled)
+  pinMode(SD_PWR_PIN, OUTPUT);
+  digitalWrite(SD_PWR_PIN, HIGH);  // Power ON SD card
+  delay(200);  // Let it stabilize before accessing
+  
   if (!SD.begin(SD_CS)) {
     Serial.println("Card Mount Failed");
     while (1);
@@ -50,6 +55,11 @@ void setup() {
   
   Wire.begin(2, 3);  // SDA = GPIO 2, SCL = GPIO 3 
   Serial.println("GPIO pins initialized");
+
+  // Initialize BME280 (temperature sensor) MOSFET N-Channel (gpio controlled)
+  pinMode(BME280_PWR_PIN, OUTPUT);
+  digitalWrite(BME280_PWR_PIN, HIGH);  // Turn ON power to BME280
+  delay(200);  // Give sensor time to power up
   
   if (!bme.begin(TMP_ADDR)) { // Check if the BME280 is connected at I2C address 0x76
     Serial.println("Could not find a valid BME280 sensor, check wiring!");
@@ -96,11 +106,6 @@ void loop () {
 
   Serial.print(logLine);  // Print to Serial
 
-  // Writing indication, if blinking don't remove sd.
-  digitalWrite(LED_BOARD, HIGH);
-  delay(250);
-  digitalWrite(LED_BOARD, LOW);
-
   // Append to log file
   File logFile = SD.open(LOG_FILE, FILE_APPEND);
   if (logFile) {
@@ -112,10 +117,26 @@ void loop () {
 
   if (DEBUG_MODE) {
     Serial.println("DEBUG_MODE active — not sleeping.");
-    delay(10000); // print every 10 seconds
+    Serial.println("Starting simulation...");
+    delay(100);
+    digitalWrite(BME280_PWR_PIN, LOW);  // Turn OFF BME280 to save power
+    Serial.println("BME280 module disconnected!");
+    delay(100);
+    digitalWrite(SD_PWR_PIN, LOW);  // Power OFF SD card
+    Serial.println("SD card module disconnected!");
+    delay(30000); // rest 30 seconds
+  
+    digitalWrite(BME280_PWR_PIN, HIGH);
+    Serial.println("BME280 module Connected!");
+    delay(100);
+    digitalWrite(SD_PWR_PIN, HIGH);
+    Serial.println("SD card module Connected!");
+    delay(100);
   } else {
     Serial.println("Entering deep sleep...");
     delay(100);  // Let the message flush
+    digitalWrite(BME280_PWR_PIN, LOW);  // Turn OFF BME280 to save power
+    digitalWrite(SD_PWR_PIN, LOW);  // Power OFF SD card
     esp_deep_sleep_start();
   } 
 }

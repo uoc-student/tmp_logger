@@ -1,4 +1,3 @@
-//#include <DS3231.h>
 #include <SD.h>
 #include <Wire.h>
 #include <time.h>
@@ -11,11 +10,11 @@
 #define OFFSET          4.0             // There is a 4 degrees Celsius Offset
 #define TMP_ADDR        0x76            // BME280 is connected at I2C address 0x76 (pin connected to GND)
 #define SD_CS           7               // Chip Select, can be any GPIO pin
-#define DEBUG_MODE      false           // Set to true to disable deep sleep during development (prevents serial port issues)
+#define DEBUG_MODE      0               // 1 -> Debug ON 
 #define SQW_PIN         1               // Square Wave Generator for the RTC clock, will trigger alarm to wake up esp32
 #define DS3231_ADDR     0x68            // I²C address (to set the timer)
 #define LOG_FILE        "/log.txt"      // Log file path on SD card
-#define BME280_PWR_PIN  0               // GPIO 8 controls power to BME280
+#define BME280_PWR_PIN  20              // GPIO 20 controls power to BME280
 #define SD_PWR_PIN      10              // GPIO 10 controls power to SD card
 
 Adafruit_BME280         bme;            // Create an instance of the BME280 (tmp sensor)
@@ -31,11 +30,15 @@ RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC 
 
 void setup() {
   Serial.begin(115200); // Start serial communication
-  Serial.println("******** Initializing setup() ********");
+  //Serial.println("******** Initializing setup() ********");
   
   // Turn off annoying blue LED
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
+
+  // Change the default SDA and SCL pins to custom
+  Wire.begin(2, 3);  // SDA = GPIO 2, SCL = GPIO 3 
+  //Serial.println("GPIO pins initialized");
   
   // Initialize SD card MOSFET N-Channel (gpio controlled)
   pinMode(SD_PWR_PIN, OUTPUT);
@@ -43,22 +46,19 @@ void setup() {
   delay(200);  // Let it stabilize before accessing
   
   if (!SD.begin(SD_CS)) {
-    Serial.println("Card Mount Failed");
+    //Serial.println("Card Mount Failed");
     while (1);
   } else {
-    Serial.println("OK -> Card Mount Initialized");
+    //Serial.println("OK -> Card Mount Initialized");
   }
 
   uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
-    Serial.println("No SD card attached");
+    //Serial.println("No SD card attached");
     while (1);
   } else {
-    Serial.println("OK -> SD Card Initialized.");
+    //Serial.println("OK -> SD Card Initialized.");
   }
-  
-  Wire.begin(2, 3);  // SDA = GPIO 2, SCL = GPIO 3 
-  Serial.println("GPIO pins initialized");
 
   // Initialize BME280 (temperature sensor) MOSFET N-Channel (gpio controlled)
   pinMode(BME280_PWR_PIN, OUTPUT);
@@ -66,15 +66,15 @@ void setup() {
   delay(200);  // Give sensor time to power up
   
   if (!bme.begin(TMP_ADDR)) { // Check if the BME280 is connected at I2C address 0x76
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
+    //Serial.println("Could not find a valid BME280 sensor, check wiring!");
     while (1);
   } else {
-    Serial.println("OK -> Temperature Sensor Initialized");
+    //Serial.println("OK -> Temperature Sensor Initialized");
   }
 
   // Initialize the RTC and SWQ_PIN for wakeup call
   if (!rtc.begin()) {
-  Serial.println("Couldn't find RTC");
+  //Serial.println("Couldn't find RTC");
   while (1);
   }
   
@@ -82,17 +82,17 @@ void setup() {
   esp_deep_sleep_enable_gpio_wakeup(1ULL << SQW_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
 
   if (rtc.lostPower()) {
-  Serial.println("RTC lost power, setting the time!");
+  //Serial.println("RTC lost power, setting the time!");
   rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));  // Set RTC to compile time
   } else {
-    Serial.println("OK -> RTC initialized and time up to date!");
+    //Serial.println("OK -> RTC initialized and time up to date!");
   }
 
   clearAlarmFlag();   // Clear any existing alarm
   setNextAlarm();     // Schedule next one
-  Serial.println("OK -> RTC Alarm1 sheduled!");
+  //Serial.println("OK -> RTC Alarm1 sheduled!");
 
-  Serial.println("******** SETUP SUCCESSFULL ********");
+  //Serial.println("******** SETUP SUCCESSFULL ********");
 }
 
 void loop () {  
@@ -104,22 +104,35 @@ void loop () {
   // Get current time from RTC
   DateTime now = rtc.now();
 
+  // Wake up readon after sleep (debug) 
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
   char logLine[64];
   sprintf(logLine, "%02d-%02d-%04d\t%02d:%02d:%02d\t%.1f C\t\t%.1f F\n",
           now.day(), now.month(), now.year(), now.hour(), now.minute(), now.second(), temp_C, temp_F);
+  Serial.print(logLine);  
 
-  Serial.print(logLine);  // Print to Serial
+  #if DEBUG_MODE
+  char logWake[64];
+    sprintf(logWake, "tWake: %d\n", (int) wakeup_reason);
+    Serial.print(logWake);  
+  #endif 
+
+  
 
   // Append to log file
   File logFile = SD.open(LOG_FILE, FILE_APPEND);
   if (logFile) {
     logFile.print(logLine);
+    #if DEBUG_MODE
+      logFile.print(logWake);
+    #endif
     logFile.close();
   } else {
-    Serial.println("Failed to open log file for writing");
+    //Serial.println("Failed to open log file for writing");
   }
 
-  if (DEBUG_MODE) {
+  #if DEBUG_MODE 
     Serial.println("DEBUG_MODE active — not sleeping.");
     Serial.println("Starting simulation...");
     delay(100);
@@ -136,13 +149,14 @@ void loop () {
     digitalWrite(SD_PWR_PIN, HIGH);
     Serial.println("SD card module Connected!");
     delay(100);
-  } else {
-    Serial.println("Entering deep sleep...");
+  #else
     delay(100);  // Let the message flush
     digitalWrite(BME280_PWR_PIN, LOW);  // Turn OFF BME280 to save power
     digitalWrite(SD_PWR_PIN, LOW);  // Power OFF SD card
+    disableUnusedPins();
+    Wire.end();
     esp_deep_sleep_start();
-  } 
+  #endif
 }
 
 
@@ -236,4 +250,23 @@ void clearAlarmFlag() {
   Wire.write(0x0F);
   Wire.write(status);
   Wire.endTransmission();
+}
+
+/*
+ * Pins that need to stay active during sleep mode:
+ * GPIO 1: SQW generator from RTC to trigger interrupt and wake up the device
+ * GPIO 10: SD card via Mosfet
+ * GPIO 20: BME via Mosfet
+ * GPIO 7: CS of the SD card
+ */
+void disableUnusedPins() {
+  // Set SD card Chip Select (CS) pin to HIGH to avoid floating state during deep sleep.
+  // This prevents unintended current leakage or partial powering of the SD card when it's turned off.
+  pinMode(SD_CS, OUTPUT);
+  digitalWrite(SD_CS, HIGH);
+  // Set unused pins to INPUT_PULLDOWN to avoid floating state
+  const int unusedPins[] = {0, 2, 3, 4, 5, 6, 8, 9, 21};
+  for (int i = 0; i < sizeof(unusedPins)/sizeof(unusedPins[0]); i++) {
+    pinMode(unusedPins[i], INPUT_PULLDOWN);
+  }
 }

@@ -7,7 +7,7 @@
 #include "esp_sleep.h"
 
 #define INTERVAL        30 * 60 * 1000  // Interval for reading data in ms (current: every 30 minutes)
-#define OFFSET          4.0             // There is a 4 degrees Celsius Offset
+#define OFFSET          0.0             // There is a 4 degrees Celsius Offset
 #define TMP_ADDR        0x76            // BME280 is connected at I2C address 0x76 (pin connected to GND)
 #define SD_CS           7               // Chip Select, can be any GPIO pin
 #define DEBUG_MODE      0               // 1 -> Debug ON 
@@ -29,7 +29,7 @@ RTC_DS3231              rtc;            // Create an instance of the DS3231 RTC 
  */
 
 void setup() {
-  Serial.begin(115200); // Start serial communication
+  //Serial.begin(115200); // Start serial communication
   //Serial.println("******** Initializing setup() ********");
   
   // Turn off annoying blue LED
